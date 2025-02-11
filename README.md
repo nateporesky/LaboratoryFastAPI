@@ -1,2 +1,3 @@
 # LaboratoryFastAPI
-FastAPI based tool for PI's at University of Rochester to Check status of data query usage for members of lab group.
+FastAPI-based tool for PIs at the University of Rochester for Authentication Handling and Quota Management for lab group members.
+Works with SQL Databases using SQLALchemy.
