@@ -6,6 +6,10 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # JWT Configuration
 SECRET_KEY = "SECRET_KEYajnkjnknsc"
@@ -34,7 +38,7 @@ class UserDB(Base):
     email = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
     disabled = Column(Boolean, default=False)
-    last_login = Column(String, default=datetime.utcnow().isoformat())
+    last_login = Column(String, default=datetime.now(timezone.utc).isoformat())
 
 class QuotaDB(Base):
     """SQLAlchemy Model for Quotas"""
@@ -122,7 +126,7 @@ def authenticate_user(db: Session, username: str, password: str):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
 
     # Update last login timestamp
-    user.last_login = datetime.utcnow().isoformat()
+    user.last_login = datetime.now(timezone.utc).isoformat()
     db.commit()
 
     return user
@@ -163,10 +167,23 @@ async def get_current_active_user(current_user: UserDB = Depends(get_current_use
 
 # API Endpoints
 @app.post("/token", response_model=Token)
+# async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+#     """Authenticate user and return JWT token"""
+#     user = authenticate_user(db, form_data.username, form_data.password)
+    
+#     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+#     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+
+#     return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Authenticate user and return JWT token"""
     user = authenticate_user(db, form_data.username, form_data.password)
     
+    if user:
+        logger.info(f"User {user.username} authenticated successfully at {datetime.now(timezone.utc)}")
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
 
@@ -182,26 +199,37 @@ async def get_all_users(db: Session = Depends(get_db)):
     users = db.query(UserDB).all()
     return [{"username": user.username, "email": user.email, "hashed_password": user.hashed_password} for user in users]
 
-@app.get("/api/v2/members/{pi_name}")
-async def get_members(pi_name: str, db: Session = Depends(get_db)):
-    """Retrieve students under a PI from the database"""
-    quotas = db.query(QuotaDB).filter(QuotaDB.pi_name == pi_name).all()
+@app.get("/api/v2/members/")
+async def get_members(current_user: UserDB = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Retrieve students under the currently logged-in PI from the database"""
+    quotas = db.query(QuotaDB).filter(QuotaDB.pi_name == current_user.username).all()
 
     if not quotas:
-        raise HTTPException(status_code=404, detail="PI not found")
+        raise HTTPException(status_code=404, detail="No students found for this PI")
 
-    members = {quota.student_name: {"usage": quota.usage, "soft": quota.soft_limit, "hard": quota.hard_limit, "files": quota.files} for quota in quotas}
-    return members
+    members = {
+        quota.student_name: {
+            "usage": quota.usage,
+            "soft": quota.soft_limit,
+            "hard": quota.hard_limit,
+            "files": quota.files
+        }
+        for quota in quotas
+    }
+    return {"pi_name": current_user.username, "members": members}
 
-@app.get("/api/v2/summary/{pi_name}")
-async def get_summary(pi_name: str, db: Session = Depends(get_db)):
-    """Retrieve summary quota usage for a PI"""
-    usages = [quota.usage for quota in db.query(QuotaDB).filter(QuotaDB.pi_name == pi_name).all()]
+@app.get("/api/v2/summary/")
+async def get_summary(current_user: UserDB = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Retrieve summary quota usage for the currently logged-in PI"""
+    quotas = db.query(QuotaDB).filter(QuotaDB.pi_name == current_user.username).all()
 
-    if not usages:
-        raise HTTPException(status_code=404, detail="PI not found")
+    if not quotas:
+        raise HTTPException(status_code=404, detail="No quota records found for this PI")
+
+    usages = [quota.usage for quota in quotas]
 
     return {
+        "pi_name": current_user.username,
         "usage_sum": sum(usages),
         "usage_avg": sum(usages) // len(usages),
         "usage_max": max(usages)
